@@ -27,8 +27,8 @@ use rquickjs::{CatchResultExt, Context, Function, Object, Runtime};
 use fb::{rgb, rgba, Argb, Font, Framebuffer};
 use sprites::Sprites;
 
-const W: usize = 300;
-const H: usize = 150;
+const W: usize = 156;
+const H: usize = 206;
 
 // ── observed scenes (示意 mirror of what the agent watches) ────────────────
 struct Scene {
@@ -383,10 +383,10 @@ const C_PAPER: Argb = rgb(0xff, 0xfa, 0xf0);
 const C_ORANGE: Argb = rgb(0xf0, 0x91, 0x2f);
 const C_ORANGE2: Argb = rgb(0xb9, 0x56, 0x0e);
 
-const SX: i32 = 20; // screen origin
-const SY: i32 = 30;
-const SW: i32 = 116;
-const SH: i32 = 74;
+const SX: i32 = 18; // screen origin (monitor sits BELOW the cat)
+const SY: i32 = 104;
+const SW: i32 = 120;
+const SH: i32 = 72;
 
 fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, transparent: bool, text: &text::Text) {
     if transparent {
@@ -398,13 +398,13 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         fb.rect(0, H as i32 - 14, W as i32, 3, rgba(0x8a, 0x63, 0x30, 120));
     }
 
-    // ── monitor ──
-    fb.rect(8, 18, 140, 104, C_BODY);
-    fb.frame_rect(8, 18, 140, 104, 3, C_INK);
+    // ── monitor (sits BELOW the cat) ──
+    fb.rect(6, 94, 144, 100, C_BODY);
+    fb.frame_rect(6, 94, 144, 100, 3, C_INK);
     // recessed screen
     fb.rect(SX - 3, SY - 3, SW + 6, SH + 6, C_INK);
     fb.rect(SX, SY, SW, SH, C_SCREEN);
-    draw_screen(fb, font, stage);
+    draw_screen(fb, font, stage, text);
     // scanlines
     let mut y = SY;
     while y < SY + SH {
@@ -412,36 +412,26 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         y += 3;
     }
     // brand + LED
-    fb.text(font, "DOZY-CRT", 14, 110, C_GLOW2, 1);
+    fb.text(font, "DOZY-CRT", 12, 182, C_GLOW2, 1);
     let led = if stage.observe { C_GLOW } else { rgb(0x5a, 0x2a, 0x2a) };
-    fb.rect(138, 110, 6, 6, led);
+    fb.rect(140, 182, 6, 6, led);
     // neck + base
-    fb.rect(70, 122, 16, 6, C_BODY2);
-    fb.rect(58, 128, 40, 5, C_BODY);
-    fb.frame_rect(58, 128, 40, 5, 2, C_INK);
+    fb.rect(68, 194, 20, 7, C_BODY2);
+    fb.rect(52, 200, 52, 5, C_BODY);
+    fb.frame_rect(52, 200, 52, 5, 2, C_INK);
 
-    // cadence label
-    let cad = if !stage.observe {
-        "OBS 0 STANDBY".to_string()
-    } else {
-        let hz = if stage.cad_hz >= 10.0 { 14 } else { 2 };
-        format!("OBS {}FPS COALESCED", hz)
-    };
-    fb.text(font, &cad, 8, 6, rgb(0xcb, 0xb0, 0x88), 1);
-
-    // ── cat ──  faces LEFT (toward the monitor) normally; turns away to avert
+    // ── cat: perched ON TOP of the monitor ──
     let cs = sprites.group(&stage.cat_state);
     if !cs.is_empty() {
         let sp = &cs[stage.frame % cs.len()];
-        let cx = 150;
-        let cy = 62;
+        let cx = 4;
+        let cy = 28;
         fb.blit(sp, cx, cy, 1, !stage.averting);
         // cover-face paws when averting
         if stage.averting {
-            let px = cx + 40;
-            let py = cy + 40;
-            for (i, dx) in [0i32, 22].iter().enumerate() {
-                let _ = i;
+            let px = cx + 52;
+            let py = cy + 34;
+            for dx in [0i32, 22] {
                 fb.rect(px + dx, py, 20, 22, C_ORANGE);
                 fb.frame_rect(px + dx, py, 20, 22, 2, C_ORANGE2);
                 fb.rect(px + dx + 5, py + 3, 2, 7, C_ORANGE2);
@@ -451,54 +441,24 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         // fx above the head
         if stage.fx != "none" {
             if let Some(f) = sprites.frame(&stage.fx, stage.fx_frame) {
-                fb.blit(f, cx + 44, cy - 18, 1, false);
+                fb.blit(f, cx + 60, cy - 8, 1, false);
             }
         }
     }
 
-    // caption bubble (latin) above the cat
+    // caption bubble (short cat lines) — floats to the cat's upper right
     if !stage.caption.is_empty() && stage.clock_ms < stage.caption_until {
         let tw = fb.text_w(&stage.caption, 1);
-        let bx = 168;
-        let by = 30;
-        fb.rect(bx, by, tw + 12, 16, C_PAPER);
-        fb.frame_rect(bx, by, tw + 12, 16, 2, C_INK);
-        fb.text(font, &stage.caption, bx + 6, by + 5, rgb(0x3a, 0x26, 0x14), 1);
-        fb.rect(bx + 10, by + 16, 6, 5, C_PAPER);
-    }
-
-    // @pb chat: thinking indicator + reply panel (fontdue, any language)
-    if stage.chat_pending {
-        let tw = fb.text_w("@PB THINKING", 1);
-        fb.rect(8, 2, tw + 12, 14, C_PAPER);
-        fb.frame_rect(8, 2, tw + 12, 14, 2, C_INK);
-        fb.text(font, "@PB THINKING", 14, 6, C_ORANGE2, 1);
-    } else if !stage.chat_reply.is_empty() && stage.clock_ms < stage.chat_reply_until {
-        let bw = W as i32 - 16;
-        let bh = 52;
-        fb.rect(8, 2, bw, bh, C_PAPER);
-        fb.frame_rect(8, 2, bw, bh, 2, C_INK);
-        fb.rect(8, 2, bw, 12, C_ORANGE);
-        fb.text(font, "@PB", 12, 5, rgb(0xff, 0xf8, 0xec), 1);
-        if text.available() {
-            text.wrapped(fb, &stage.chat_reply, 13, 15, bw - 12, 12.0, 13, rgb(0x3a, 0x26, 0x14), 3);
-        } else {
-            // ASCII fallback for the pixel font
-            let ascii: String = stage.chat_reply.chars().filter(|c| c.is_ascii()).collect();
-            fb.text(font, &ascii.chars().take(38).collect::<String>(), 13, 18, C_INK, 1);
-        }
+        let bx = (W as i32 - tw - 12).max(4);
+        let by = 6;
+        fb.rect(bx, by, tw + 12, 15, C_PAPER);
+        fb.frame_rect(bx, by, tw + 12, 15, 2, C_INK);
+        fb.text(font, &stage.caption, bx + 6, by + 4, rgb(0x3a, 0x26, 0x14), 1);
     }
 
     // context menu
     if stage.menu_open {
         draw_menu(fb, font, stage);
-    }
-    // command input line
-    if let Some(cmd) = &stage.cmd {
-        fb.rect(8, H as i32 - 12, W as i32 - 16, 12, C_PAPER);
-        fb.frame_rect(8, H as i32 - 12, W as i32 - 16, 12, 2, C_INK);
-        let shown = format!("> {}_", cmd);
-        fb.text(font, &shown, 12, H as i32 - 9, rgb(0x3a, 0x26, 0x14), 1);
     }
 }
 
@@ -533,7 +493,24 @@ fn draw_menu(fb: &mut Framebuffer, font: &Font, stage: &Stage) {
     }
 }
 
-fn draw_screen(fb: &mut Framebuffer, font: &Font, stage: &Stage) {
+fn draw_screen(fb: &mut Framebuffer, font: &Font, stage: &Stage, text: &text::Text) {
+    // @pb chat takes over the screen (the cat "speaks" on its own monitor)
+    if stage.chat_pending {
+        fb.text(font, "@PB THINKING", SX + 16, SY + SH / 2 - 3, C_GLOW, 1);
+        return;
+    }
+    if !stage.chat_reply.is_empty() && stage.clock_ms < stage.chat_reply_until {
+        fb.rect(SX, SY, SW, 10, C_ORANGE);
+        fb.text(font, "@PB", SX + 4, SY + 2, rgb(0xff, 0xf8, 0xec), 1);
+        let col = rgb(0xea, 0xe2, 0xcc);
+        if text.available() {
+            text.wrapped(fb, &stage.chat_reply, SX + 4, SY + 13, SW - 8, 11.0, 12, col, 5);
+        } else {
+            let ascii: String = stage.chat_reply.chars().filter(|c| c.is_ascii()).collect();
+            fb.text(font, &ascii.chars().take(20).collect::<String>(), SX + 4, SY + 16, col, 1);
+        }
+        return;
+    }
     if !stage.observe {
         fb.text(font, "- STANDBY -", SX + 24, SY + SH / 2, C_GLOW2, 1);
         return;
@@ -842,7 +819,7 @@ fn run_window(scale: usize) -> Result<()> {
                         brain.event(serde_json::json!({"t":"menu","act":act}));
                     }
                 }
-            } else if lx >= 150 && ly >= 62 {
+            } else if ly < 94 {
                 brain.event(serde_json::json!({"t":"pet"}));
             }
         }

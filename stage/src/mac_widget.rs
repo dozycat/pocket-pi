@@ -379,7 +379,7 @@ fn handle_event(
         NSEventType::LeftMouseUp => {
             if !*dragged && !stage.borrow().menu_open {
                 // a click (not a drag) on the cat → pet it
-                if fx >= 150 && fy >= 62 {
+                if fy < 94 && fy >= 0 {
                     brain.event(serde_json::json!({"t":"pet"}));
                 }
             }
