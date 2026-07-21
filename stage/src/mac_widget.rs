@@ -66,7 +66,11 @@ pub fn run(scale: f64) -> Result<()> {
     let brain = Brain::new(stage.clone())?;
     let sprites = Sprites::load();
     let font = crate::Font::build();
+    let text = crate::text::Text::load();
     let mut fb = Framebuffer::new(W, H);
+
+    // @pb chat replies come back from a worker thread over this channel.
+    let (chat_tx, chat_rx) = std::sync::mpsc::channel::<String>();
 
     let app = NSApplication::sharedApplication(mtm);
     // Accessory: no Dock icon / menu bar — it's a widget, not an app window.
@@ -143,8 +147,18 @@ pub fn run(scale: f64) -> Result<()> {
                 )
             };
             let Some(ev) = ev else { break };
-            handle_event(&ev, &window, &stage, &brain, scale, &mut dragged);
+            handle_event(&ev, &window, &stage, &brain, scale, &mut dragged, &chat_tx);
             unsafe { app.sendEvent(&ev) };
+        }
+
+        // a chat reply arrived → show it, cat talks
+        if let Ok(reply) = chat_rx.try_recv() {
+            let mut g = stage.borrow_mut();
+            g.chat_pending = false;
+            g.chat_reply = reply;
+            g.chat_reply_until = g.clock_ms + 14000.0;
+            g.cat_state = "talk".into();
+            g.cad_hz = 14.0;
         }
 
         let now = std::time::Instant::now();
@@ -182,7 +196,7 @@ pub fn run(scale: f64) -> Result<()> {
 
         step(&stage, &brain, &sprites, dt.min(100.0));
 
-        render(&mut fb, &font, &sprites, &stage.borrow(), true);
+        render(&mut fb, &font, &sprites, &stage.borrow(), true, &text);
         let img = cg_image(&fb);
         set_layer_image(&view, &img);
 
@@ -236,6 +250,86 @@ fn append_sequence(app: &str, w: u32, h: u32, blank: bool) {
     }
 }
 
+/// The @pb chatbox: a native input dialog (osascript — supports IME/CJK),
+/// then POST {message, app, sequences} to the pb-bridge (the ported
+/// paperboy-chat agent) and hand the reply back to the render loop.
+fn start_chat(stage: &Rc<RefCell<Stage>>, tx: &std::sync::mpsc::Sender<String>) {
+    if stage.borrow().chat_pending {
+        return;
+    }
+    let app = stage.borrow().front_app.clone();
+    let sequences = recent_sequences(8);
+    {
+        let mut g = stage.borrow_mut();
+        g.chat_pending = true;
+        g.cat_state = "work".into();
+        g.cad_hz = 14.0;
+    }
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        // native text input (owns IME, so Chinese input works)
+        let out = std::process::Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg("display dialog \"跟 @pb 说：\" default answer \"\" with title \"Pocket Cat\" buttons {\"取消\",\"发送\"} default button \"发送\"")
+            .output();
+        let message = match out {
+            Ok(o) if o.status.success() => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.split("text returned:").nth(1).map(|t| t.trim().to_string()).unwrap_or_default()
+            }
+            _ => String::new(), // cancelled
+        };
+        if message.is_empty() {
+            let _ = tx.send(String::new()); // clears pending, no reply
+            return;
+        }
+        let url = std::env::var("POCKET_CAT_PB_URL").unwrap_or_else(|_| "http://127.0.0.1:8848/chat".into());
+        let body = serde_json::json!({ "message": message, "app": app, "sequences": sequences });
+        let reply = match ureq::post(&url).timeout(std::time::Duration::from_secs(60)).send_json(body) {
+            Ok(resp) => resp
+                .into_json::<serde_json::Value>()
+                .ok()
+                .and_then(|v| v["reply"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "(空回复)".into()),
+            Err(_) => "(pb-bridge 没连上 — 先跑 npx tsx examples/pb-bridge.ts)".into(),
+        };
+        // log the exchange
+        append_chat(&message, &reply);
+        let _ = tx.send(reply);
+    });
+}
+
+fn recent_sequences(n: usize) -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = format!("{home}/.pocket-cat/sequences.jsonl");
+    let Ok(content) = std::fs::read_to_string(path) else { return vec![] };
+    content
+        .lines()
+        .rev()
+        .take(n)
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .map(|v| v["app"].as_str().unwrap_or("?").to_string())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn append_chat(message: &str, reply: &str) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = format!("{home}/.pocket-cat");
+    let _ = std::fs::create_dir_all(&dir);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let rec = serde_json::json!({ "ts": ts, "message": message, "reply": reply });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/chat.jsonl")) {
+        let _ = f.write_all(format!("{}\n", rec).as_bytes());
+    }
+}
+
 fn handle_event(
     ev: &NSEvent,
     window: &NSWindow,
@@ -243,6 +337,7 @@ fn handle_event(
     brain: &Brain,
     scale: f64,
     dragged: &mut bool,
+    chat_tx: &std::sync::mpsc::Sender<String>,
 ) {
     let ty = unsafe { ev.r#type() };
     // window point (origin bottom-left) → framebuffer pixel (origin top-left)
@@ -264,7 +359,9 @@ fn handle_event(
                 let hit = crate::menu_hit(&stage.borrow(), fx, fy);
                 stage.borrow_mut().menu_open = false;
                 if let Some(act) = hit {
-                    if act != "about" {
+                    if act == "chat" {
+                        start_chat(stage, chat_tx);
+                    } else if act != "about" {
                         brain.event(serde_json::json!({"t":"menu","act":act}));
                     }
                 }

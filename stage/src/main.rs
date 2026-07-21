@@ -14,6 +14,7 @@ mod assets;
 mod capture;
 mod fb;
 mod sprites;
+mod text;
 #[cfg(target_os = "macos")]
 mod mac_widget;
 
@@ -90,6 +91,10 @@ struct Stage {
     shot: Option<fb::Sprite>,
     shot_blank: bool,
     front_app: String,
+    // @pb chat
+    chat_pending: bool,
+    chat_reply: String,
+    chat_reply_until: f64,
 }
 
 impl Stage {
@@ -120,6 +125,9 @@ impl Stage {
             shot: None,
             shot_blank: false,
             front_app: String::new(),
+            chat_pending: false,
+            chat_reply: String::new(),
+            chat_reply_until: 0.0,
         }))
     }
     fn scene(&self) -> &'static Scene {
@@ -380,7 +388,7 @@ const SY: i32 = 30;
 const SW: i32 = 116;
 const SH: i32 = 74;
 
-fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, transparent: bool) {
+fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, transparent: bool, text: &text::Text) {
     if transparent {
         // windowless widget: only the monitor + cat + bubbles are opaque; the
         // rest is fully transparent so the pet floats on the desktop.
@@ -459,6 +467,28 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         fb.rect(bx + 10, by + 16, 6, 5, C_PAPER);
     }
 
+    // @pb chat: thinking indicator + reply panel (fontdue, any language)
+    if stage.chat_pending {
+        let tw = fb.text_w("@PB THINKING", 1);
+        fb.rect(8, 2, tw + 12, 14, C_PAPER);
+        fb.frame_rect(8, 2, tw + 12, 14, 2, C_INK);
+        fb.text(font, "@PB THINKING", 14, 6, C_ORANGE2, 1);
+    } else if !stage.chat_reply.is_empty() && stage.clock_ms < stage.chat_reply_until {
+        let bw = W as i32 - 16;
+        let bh = 52;
+        fb.rect(8, 2, bw, bh, C_PAPER);
+        fb.frame_rect(8, 2, bw, bh, 2, C_INK);
+        fb.rect(8, 2, bw, 12, C_ORANGE);
+        fb.text(font, "@PB", 12, 5, rgb(0xff, 0xf8, 0xec), 1);
+        if text.available() {
+            text.wrapped(fb, &stage.chat_reply, 13, 15, bw - 12, 12.0, 13, rgb(0x3a, 0x26, 0x14), 3);
+        } else {
+            // ASCII fallback for the pixel font
+            let ascii: String = stage.chat_reply.chars().filter(|c| c.is_ascii()).collect();
+            fb.text(font, &ascii.chars().take(38).collect::<String>(), 13, 18, C_INK, 1);
+        }
+    }
+
     // context menu
     if stage.menu_open {
         draw_menu(fb, font, stage);
@@ -473,6 +503,7 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
 }
 
 const MENU: &[(&str, &str)] = &[
+    ("chat", "CHAT @PB"),
     ("observe", "OBSERVE"),
     ("privacy", "PRIVACY"),
     ("browse", "BROWSE"),
@@ -483,7 +514,7 @@ const MENU: &[(&str, &str)] = &[
 fn draw_menu(fb: &mut Framebuffer, font: &Font, stage: &Stage) {
     let x = stage.menu_x;
     let y = stage.menu_y;
-    let w = 92;
+    let w = 108;
     let h = MENU.len() as i32 * 13 + 6;
     fb.rect(x, y, w, h, C_PAPER);
     fb.frame_rect(x, y, w, h, 2, C_INK);
@@ -672,6 +703,7 @@ fn run_capture(dir: &str) -> Result<()> {
     let sprites = Sprites::load();
     let font = Font::build();
     let mut fb = Framebuffer::new(W, H);
+    let text = text::Text::load();
 
     let advance = |stage: &Rc<RefCell<Stage>>, brain: &Brain, ms: f64| {
         let mut left = ms;
@@ -700,17 +732,17 @@ fn run_capture(dir: &str) -> Result<()> {
     brain.event(serde_json::json!({"t":"boot"}));
     advance(&stage, &brain, 2000.0);
     freeze(&stage, &brain, 0); // CODE (safe)
-    render(&mut fb, &font, &sprites, &stage.borrow(), false);
+    render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
     write_png(&format!("{dir}/1-watch.png"), &fb)?;
 
     freeze(&stage, &brain, 3); // LOGIN (sensitive) → avert + censor
-    render(&mut fb, &font, &sprites, &stage.borrow(), false);
+    render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
     write_png(&format!("{dir}/2-privacy.png"), &fb)?;
 
     // browser-use — snapshot mid-animation
     brain.event(serde_json::json!({"t":"menu","act":"browse"}));
     advance(&stage, &brain, 1200.0);
-    render(&mut fb, &font, &sprites, &stage.borrow(), false);
+    render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
     write_png(&format!("{dir}/3-browse.png"), &fb)?;
     // let it finish and the post-browse reaction settle before the next state
     advance(&stage, &brain, 3200.0);
@@ -723,7 +755,7 @@ fn run_capture(dir: &str) -> Result<()> {
         g.menu_x = 120;
         g.menu_y = 40;
     }
-    render(&mut fb, &font, &sprites, &stage.borrow(), false);
+    render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
     write_png(&format!("{dir}/4-menu.png"), &fb)?;
 
     // nap — clean, nothing pending
@@ -732,10 +764,22 @@ fn run_capture(dir: &str) -> Result<()> {
     }
     brain.event(serde_json::json!({"t":"menu","act":"nap"}));
     advance(&stage, &brain, 800.0);
-    render(&mut fb, &font, &sprites, &stage.borrow(), false);
+    render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
     write_png(&format!("{dir}/5-nap.png"), &fb)?;
 
-    println!("wrote 5 frames to {dir}/");
+    // @pb chat reply panel (fontdue, CJK)
+    {
+        let mut g = stage.borrow_mut();
+        g.menu_open = false;
+        g.chat_pending = false;
+        g.chat_reply = "喵~ 你在改 mac_widget.rs、反复 cargo build 调窗口。要我帮你盯着编译结果吗?".into();
+        g.chat_reply_until = g.clock_ms + 20000.0;
+        g.cat_state = "talk".into();
+    }
+    render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
+    write_png(&format!("{dir}/6-chat.png"), &fb)?;
+
+    println!("wrote 6 frames to {dir}/ (text: {})", if text.available() { "fontdue" } else { "ascii-fallback" });
     Ok(())
 }
 
@@ -747,6 +791,7 @@ fn run_window(scale: usize) -> Result<()> {
     let sprites = Sprites::load();
     let font = Font::build();
     let mut fb = Framebuffer::new(W, H);
+    let text = text::Text::load();
 
     let scale_opt = match scale {
         1 => Scale::X1,
@@ -782,7 +827,7 @@ fn run_window(scale: usize) -> Result<()> {
         if rdown && !prev_r {
             let mut g = stage.borrow_mut();
             g.menu_open = true;
-            g.menu_x = lx.min(W as i32 - 96);
+            g.menu_x = lx.min(W as i32 - 112);
             g.menu_y = ly.min(H as i32 - 76);
         }
         if ldown && !prev_l {
@@ -804,7 +849,7 @@ fn run_window(scale: usize) -> Result<()> {
         prev_l = ldown;
         prev_r = rdown;
 
-        render(&mut fb, &font, &sprites, &stage.borrow(), false);
+        render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
         win.update_with_buffer(&fb.to_minifb(), W, H)?;
     }
     Ok(())
@@ -814,7 +859,7 @@ fn menu_hit(stage: &Stage, x: i32, y: i32) -> Option<&'static str> {
     if !stage.menu_open {
         return None;
     }
-    if x < stage.menu_x || x > stage.menu_x + 92 {
+    if x < stage.menu_x || x > stage.menu_x + 108 {
         return None;
     }
     for (i, (act, _)) in MENU.iter().enumerate() {

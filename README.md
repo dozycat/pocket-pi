@@ -99,8 +99,28 @@ npm run cat:capture             # headless: render 5 key states to stage/capture
 ```
 
 The headless `--capture` mode renders the watch / privacy-avert /
-browser-use / menu / nap states straight to PNG (no display needed) — the
-runtime's verification story, exactly as RUNTIMES.md requires.
+browser-use / menu / nap / chat states straight to PNG (no display
+needed) — the runtime's verification story, exactly as RUNTIMES.md
+requires.
+
+**Really connected (macOS):**
+- **OS screencapture** — the monitor mirrors the actual desktop: a thread
+  runs the system `screencapture` + `sips` at ~1.4 fps, decoded and blitted
+  live (needs Screen Recording permission; a blank frame shows a GRANT
+  hint). The only permission required.
+- **Activity sequences** — every frontmost-app change (via `NSWorkspace`,
+  no permission) appends a real record to `~/.pocket-cat/sequences.jsonl`,
+  and drives privacy-avert against a sensitive-app list.
+- **@pb in-context chat** — right-click → CHAT @PB opens a native input
+  (IME/CJK), and the message + frontmost app + recent sequences POST to
+  `pb-bridge`: the paperboy-chat agent (persona ported from santi) run
+  through cat's event loop against a real model (openai-codex). The reply
+  renders in a fontdue panel above the cat (any language). Start it with:
+
+  ```sh
+  # in the cat repo:
+  npx tsx examples/pb-bridge.ts        # paperboy-chat on :8848 (real model)
+  ```
 
 ## Layout
 
