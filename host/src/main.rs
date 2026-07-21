@@ -14,6 +14,7 @@ mod guest;
 mod spec_generated;
 mod surface;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::RecvTimeoutError;
@@ -23,7 +24,7 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 
 use guest::Guest;
-use surface::{fetch_event_json, quiescent, FetchEvent, HostState};
+use surface::{quiescent, HostState};
 
 fn main() {
     let code = match run() {
@@ -102,89 +103,69 @@ fn run() -> Result<i32> {
     // Boot turn.
     guest.eval(&bundle_path, &source)?;
 
-    // The pump.
+    // The pump. Facts accumulate in `pending` and are delivered as ONE guest
+    // turn per wake; a nonzero coalesce window (set by the guest via tickHz)
+    // caps how often the guest is woken without ever imposing a floor — an
+    // idle run still sleeps to the next real event and exits at quiescence.
+    let mut pending: Vec<Value> = Vec::new();
+    let mut last_dispatch: u64 = 0;
     loop {
         if let Some(code) = state.borrow().exit_code {
             return Ok(code);
         }
 
-        let mut batch: Vec<Value> = Vec::new();
+        // 1) collect any facts available right now.
+        pending.append(&mut state.borrow_mut().collect_facts());
 
-        // Facts from fetch threads (non-blocking drain).
-        let mut finished: Vec<u32> = Vec::new();
-        {
-            let st = state.borrow();
-            while let Ok(event) = st.fetch_rx.try_recv() {
-                match &event {
-                    FetchEvent::Done { id } | FetchEvent::Error { id, .. } => finished.push(*id),
-                    _ => {}
-                }
-                batch.push(fetch_event_json(&event));
+        // 2) something to deliver?
+        if !pending.is_empty() {
+            let (coalesce, now) = {
+                let st = state.borrow();
+                (st.coalesce_ms, st.monotonic_ms())
+            };
+            let since = now.saturating_sub(last_dispatch);
+            if coalesce > 0 && since < coalesce {
+                // Within the coalescing window: wait the remainder, merging any
+                // facts that arrive, then loop back to dispatch them together.
+                wait_for_facts(&state, coalesce - since)?;
+                continue;
             }
-        }
-        {
-            let mut st = state.borrow_mut();
-            for id in finished {
-                st.inflight.remove(&id);
-            }
-            // Due timers.
-            let now = st.monotonic_ms();
-            let mut due: Vec<u32> = Vec::new();
-            st.timers.retain(|(at, id)| {
-                if *at <= now {
-                    due.push(*id);
-                    false
-                } else {
-                    true
-                }
-            });
-            due.sort_unstable();
-            for id in due {
-                batch.push(serde_json::json!({"kind": "timer", "id": id}));
-            }
-        }
-
-        if !batch.is_empty() {
-            let json = serde_json::to_string(&batch).expect("batch is json");
+            let json = serde_json::to_string(&pending).expect("batch is json");
+            pending.clear();
+            last_dispatch = state.borrow().monotonic_ms();
             guest.dispatch(&json)?; // one guest turn, then jobs drain
             continue;
         }
 
-        // Nothing to deliver: sleep until the next possible fact, or exit.
-        let (next_timer, inflight) = {
-            let st = state.borrow();
-            (st.timers.iter().map(|(at, _)| *at).min(), !st.inflight.is_empty())
-        };
-        if let Some(code) = state.borrow().exit_code {
-            return Ok(code);
-        }
+        // 3) nothing pending: exit at quiescence, else sleep to the next fact.
         if quiescent(&state.borrow()) {
             return Ok(0);
         }
-        let now = state.borrow().monotonic_ms();
-        let wait_ms = next_timer.map(|at| at.saturating_sub(now)).unwrap_or(60_000).min(60_000);
-        if inflight {
-            // Block on the fetch channel so streamed chunks wake us promptly.
-            let st = state.borrow();
-            match st.fetch_rx.recv_timeout(Duration::from_millis(wait_ms.max(1))) {
-                Ok(event) => {
-                    let is_end = matches!(&event, FetchEvent::Done { .. } | FetchEvent::Error { .. });
-                    let id = match &event {
-                        FetchEvent::Status { id, .. } | FetchEvent::Chunk { id, .. } |
-                        FetchEvent::Done { id } | FetchEvent::Error { id, .. } => *id,
-                    };
-                    let json = serde_json::to_string(&[fetch_event_json(&event)]).expect("json");
-                    drop(st);
-                    if is_end {
-                        state.borrow_mut().inflight.remove(&id);
-                    }
-                    guest.dispatch(&json)?;
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {}
-            }
-        } else {
-            std::thread::sleep(Duration::from_millis(wait_ms.max(1)));
-        }
+        let wait_ms = state.borrow().next_timer_in().unwrap_or(60_000).min(60_000);
+        wait_for_facts(&state, wait_ms)?;
     }
+}
+
+/// Sleep up to `ms`, but wake early if a fetch thread reports (so streamed
+/// chunks stay responsive). Received events are queued for the next collect.
+fn wait_for_facts(state: &Rc<RefCell<HostState>>, ms: u64) -> Result<()> {
+    let ms = ms.max(1);
+    let inflight = !state.borrow().inflight.is_empty();
+    if inflight {
+        // recv_timeout borrows the receiver; requeue via the state's own sender
+        // is unnecessary — collect_facts drains the same channel next loop, so
+        // just block here and let the next iteration pick everything up.
+        let deadline = Duration::from_millis(ms);
+        let st = state.borrow();
+        match st.fetch_rx.recv_timeout(deadline) {
+            Ok(event) => {
+                // Put it back so collect_facts sees it uniformly.
+                st.fetch_tx_clone().send(event).ok();
+            }
+            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {}
+        }
+    } else {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+    Ok(())
 }

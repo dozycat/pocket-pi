@@ -37,6 +37,8 @@ pub const OP_ENV: u32 = 13;
 pub const OP_ARGS: u32 = 14;
 /// (code: number) => void — Request host exit with a status code at the end of this turn.
 pub const OP_EXIT: u32 = 15;
+/// (hz: number) => void — Set the pump's frame-coalescing ceiling: facts arriving within 1000/hz ms merge into ONE guest turn (PocketJS-style adaptive cadence for the agent domain). hz<=0 restores pure event-driven delivery. A visible widget raises this during animation (~12) and drops to ~2 when idle; headless leaves it 0. The pump never IMPOSES a floor — it only caps how often the guest is woken, so an idle run still sleeps to the next real event.
+pub const OP_TICK_HZ: u32 = 16;
 
 /// {id: number} — An armed timer elapsed.
 pub const EV_TIMER: &str = "timer";
@@ -49,5 +51,5 @@ pub const EV_FETCH_DONE: &str = "fetchDone";
 /// {id: number, message: string, aborted: boolean} — Request failed or was aborted.
 pub const EV_FETCH_ERROR: &str = "fetchError";
 
-pub const OP_NAMES: &[&str] = &["now", "monotonic", "random", "timerStart", "timerClear", "fetchStart", "fetchAbort", "fsRead", "fsWrite", "fsAppend", "fsExists", "fsRemove", "env", "args", "exit"];
+pub const OP_NAMES: &[&str] = &["now", "monotonic", "random", "timerStart", "timerClear", "fetchStart", "fetchAbort", "fsRead", "fsWrite", "fsAppend", "fsExists", "fsRemove", "env", "args", "exit", "tickHz"];
 pub const EVENT_NAMES: &[&str] = &["timer", "fetchStatus", "fetchChunk", "fetchDone", "fetchError"];

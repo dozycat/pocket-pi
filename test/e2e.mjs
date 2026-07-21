@@ -91,6 +91,47 @@ const run = (args, env = {}) =>
   check("inside the root works", out.includes('inside write: "inside"'), out)
 }
 
+// ── 4. adaptive tick coalescing ──────────────────────────────────────────
+{
+  const guest = join(work, "tick.js")
+  // 8 timers all firing within ~40ms; with a 2 Hz (500ms) window they must
+  // collapse into a single dispatched batch. __pi_dispatch counts turns.
+  writeFileSync(guest, `
+    pi.tickHz(2)
+    let turns = 0, facts = 0
+    const base = globalThis.__pi_dispatch
+    globalThis.__pi_dispatch = (j) => { turns++; facts += JSON.parse(j).length; base && 0 }
+    for (let i = 1; i <= 8; i++) pi.timerStart(i, 5 + i * 4)
+    // report after everything has drained, then exit
+    pi.timerStart(99, 900)
+    const seen = new Set()
+    globalThis.__pi_dispatch = (j) => {
+      turns++
+      const batch = JSON.parse(j)
+      facts += batch.length
+      for (const e of batch) seen.add(e.id)
+      if (seen.has(99)) { console.log("turns=" + turns + " facts=" + facts); pi.exit(0) }
+    }
+  `)
+  const out = run(["run", guest, "--root", work])
+  const m = out.match(/turns=(\d+) facts=(\d+)/)
+  check("tick: all 8 timers delivered", m && Number(m[2]) >= 8, out)
+  check("tick: 2 Hz coalesces bursts into few turns", m && Number(m[1]) <= 3, out)
+
+  // control: no tickHz → event-driven, more turns for the same burst
+  const guest2 = join(work, "notick.js")
+  writeFileSync(guest2, `
+    let turns = 0
+    globalThis.__pi_dispatch = (j) => { turns++; const b=JSON.parse(j);
+      if (b.some(e=>e.id===99)) { console.log("turns="+turns); pi.exit(0) } }
+    for (let i = 1; i <= 8; i++) pi.timerStart(i, 5 + i * 12)
+    pi.timerStart(99, 700)
+  `)
+  const out2 = run(["run", guest2, "--root", work])
+  const m2 = out2.match(/turns=(\d+)/)
+  check("no-tick: spread timers wake more turns than coalesced", m2 && Number(m2[1]) >= 4, out2)
+}
+
 if (failures > 0) {
   console.error(`\n${failures} failure(s)`)
   process.exit(1)

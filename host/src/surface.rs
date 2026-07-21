@@ -36,6 +36,9 @@ pub struct HostState {
     pub fetch_rx: Receiver<FetchEvent>,
     fetch_tx: Sender<FetchEvent>,
     pub exit_code: Option<i32>,
+    /// Frame-coalescing ceiling in ms (0 = pure event-driven). Facts arriving
+    /// within this window merge into one guest turn; never a floor.
+    pub coalesce_ms: u64,
     root: PathBuf,
     env: HashMap<String, String>,
     args: Vec<String>,
@@ -52,6 +55,7 @@ impl HostState {
             fetch_rx,
             fetch_tx,
             exit_code: None,
+            coalesce_ms: 0,
             root,
             env,
             args,
@@ -101,6 +105,53 @@ impl HostState {
 /// True when nothing can ever wake the guest again (pump exit condition).
 pub fn quiescent(state: &HostState) -> bool {
     state.timers.is_empty() && state.inflight.is_empty()
+}
+
+impl HostState {
+    /// Drain everything the guest should hear THIS turn: completed/errored
+    /// fetch ids are cleared from inflight, fetch progress and due timers
+    /// become event batch entries. Non-blocking — call after any wake.
+    pub fn collect_facts(&mut self) -> Vec<Value> {
+        let mut batch: Vec<Value> = Vec::new();
+        let mut finished: Vec<u32> = Vec::new();
+        while let Ok(event) = self.fetch_rx.try_recv() {
+            match &event {
+                FetchEvent::Done { id } | FetchEvent::Error { id, .. } => finished.push(*id),
+                _ => {}
+            }
+            batch.push(fetch_event_json(&event));
+        }
+        for id in finished {
+            self.inflight.remove(&id);
+        }
+        let now = self.monotonic_ms();
+        let mut due: Vec<u32> = Vec::new();
+        self.timers.retain(|(at, id)| {
+            if *at <= now {
+                due.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        due.sort_unstable();
+        for id in due {
+            batch.push(json!({ "kind": "timer", "id": id }));
+        }
+        batch
+    }
+
+    /// A clone of the fetch-event sender (used to requeue an event peeked
+    /// off the channel while waiting, so collect_facts drains uniformly).
+    pub fn fetch_tx_clone(&self) -> Sender<FetchEvent> {
+        self.fetch_tx.clone()
+    }
+
+    /// ms until the next timer fires, capped; None when no timers.
+    pub fn next_timer_in(&self) -> Option<u64> {
+        let now = self.monotonic_ms();
+        self.timers.iter().map(|(at, _)| at.saturating_sub(now)).min()
+    }
 }
 
 fn start_fetch(state: &mut HostState, id: u32, req_json: String) {
@@ -307,6 +358,12 @@ pub fn mount(guest: &Guest, state: Rc<RefCell<HostState>>) -> Result<()> {
             let st = state.clone();
             op!("exit", move |code: i32| {
                 st.borrow_mut().exit_code = Some(code);
+            });
+        }
+        {
+            let st = state.clone();
+            op!("tickHz", move |hz: f64| {
+                st.borrow_mut().coalesce_ms = if hz > 0.0 { (1000.0 / hz) as u64 } else { 0 };
             });
         }
         Ok(())

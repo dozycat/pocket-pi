@@ -60,7 +60,8 @@ export const OPS: readonly OpSpec[] = [
   { code: 12, name: "fsRemove", sig: "(path: string) => void", doc: "Remove a file under the root; missing is a no-op." },
   { code: 13, name: "env", sig: "(name: string) => string | null", doc: "Read an allowlisted environment value (--allow-env / --env at launch)." },
   { code: 14, name: "args", sig: "() => string", doc: "JSON array of guest argv (everything after the bundle path)." },
-  { code: 15, name: "exit", sig: "(code: number) => void", doc: "Request host exit with a status code at the end of this turn." }
+  { code: 15, name: "exit", sig: "(code: number) => void", doc: "Request host exit with a status code at the end of this turn." },
+  { code: 16, name: "tickHz", sig: "(hz: number) => void", doc: "Set the pump's frame-coalescing ceiling: facts arriving within 1000/hz ms merge into ONE guest turn (PocketJS-style adaptive cadence for the agent domain). hz<=0 restores pure event-driven delivery. A visible widget raises this during animation (~12) and drops to ~2 when idle; headless leaves it 0. The pump never IMPOSES a floor — it only caps how often the guest is woken, so an idle run still sleeps to the next real event." }
 ] as const
 
 export const EVENTS: readonly EventSpec[] = [
