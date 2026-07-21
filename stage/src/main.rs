@@ -13,6 +13,7 @@
 mod assets;
 mod capture;
 mod fb;
+mod session;
 mod sprites;
 mod text;
 #[cfg(target_os = "macos")]
@@ -28,7 +29,7 @@ use fb::{rgb, rgba, Argb, Font, Framebuffer};
 use sprites::Sprites;
 
 const W: usize = 156;
-const H: usize = 206;
+const H: usize = 240; // fits the 150×240 designed chatbox; cat+monitor sit at the bottom
 
 // ── observed scenes (stand-in mirror of what the agent watches) ────────────
 struct Scene {
@@ -95,6 +96,12 @@ struct Stage {
     chat_pending: bool,
     chat_reply: String,
     chat_reply_until: f64,
+    // chatbox (the designed 大对话框 surface) — the current session, mirrored
+    // from the session store (mac_widget owns persistence + switching)
+    chat_open: bool,
+    chat_pos: String,             // "2/5" session position for the log
+    chat_msgs: Vec<(String, String)>, // (role, text) of the current session
+    chat_input: String,           // what's being typed in the chatbox input bar
 }
 
 impl Stage {
@@ -128,6 +135,10 @@ impl Stage {
             chat_pending: false,
             chat_reply: String::new(),
             chat_reply_until: 0.0,
+            chat_open: false,
+            chat_pos: String::new(),
+            chat_msgs: Vec::new(),
+            chat_input: String::new(),
         }))
     }
     fn scene(&self) -> &'static Scene {
@@ -383,8 +394,8 @@ const C_PAPER: Argb = rgb(0xff, 0xfa, 0xf0);
 const C_ORANGE: Argb = rgb(0xf0, 0x91, 0x2f);
 const C_ORANGE2: Argb = rgb(0xb9, 0x56, 0x0e);
 
-const SX: i32 = 18; // screen origin (monitor sits BELOW the cat)
-const SY: i32 = 104;
+const SX: i32 = 18; // screen origin (monitor sits BELOW the cat, at the bottom)
+const SY: i32 = 138;
 const SW: i32 = 120;
 const SH: i32 = 72;
 
@@ -398,9 +409,18 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         fb.rect(0, H as i32 - 14, W as i32, 3, rgba(0x8a, 0x63, 0x30, 120));
     }
 
-    // ── monitor (sits BELOW the cat) ──
-    fb.rect(6, 94, 144, 100, C_BODY);
-    fb.frame_rect(6, 94, 144, 100, 3, C_INK);
+    // ── chat mode: the designed chatbox takes over the whole widget ──
+    if stage.chat_open {
+        draw_chat(fb, font, text, sprites, stage);
+        if stage.menu_open {
+            draw_menu(fb, font, stage);
+        }
+        return;
+    }
+
+    // ── monitor (sits at the BOTTOM, below the cat) ──
+    fb.rect(6, 128, 144, 100, C_BODY);
+    fb.frame_rect(6, 128, 144, 100, 3, C_INK);
     // recessed screen
     fb.rect(SX - 3, SY - 3, SW + 6, SH + 6, C_INK);
     fb.rect(SX, SY, SW, SH, C_SCREEN);
@@ -412,20 +432,20 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         y += 3;
     }
     // brand + LED
-    fb.text(font, "DOZY-CRT", 12, 182, C_GLOW2, 1);
+    fb.text(font, "DOZY-CRT", 12, 216, C_GLOW2, 1);
     let led = if stage.observe { C_GLOW } else { rgb(0x5a, 0x2a, 0x2a) };
-    fb.rect(140, 182, 6, 6, led);
+    fb.rect(140, 216, 6, 6, led);
     // neck + base
-    fb.rect(68, 194, 20, 7, C_BODY2);
-    fb.rect(52, 200, 52, 5, C_BODY);
-    fb.frame_rect(52, 200, 52, 5, 2, C_INK);
+    fb.rect(68, 228, 20, 7, C_BODY2);
+    fb.rect(52, 234, 52, 5, C_BODY);
+    fb.frame_rect(52, 234, 52, 5, 2, C_INK);
 
     // ── cat: perched ON TOP of the monitor ──
     let cs = sprites.group(&stage.cat_state);
     if !cs.is_empty() {
         let sp = &cs[stage.frame % cs.len()];
         let cx = 4;
-        let cy = 28;
+        let cy = 62;
         fb.blit(sp, cx, cy, 1, !stage.averting);
         // cover-face paws when averting
         if stage.averting {
@@ -450,7 +470,7 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
     if !stage.caption.is_empty() && stage.clock_ms < stage.caption_until {
         let tw = fb.text_w(&stage.caption, 1);
         let bx = (W as i32 - tw - 12).max(4);
-        let by = 6;
+        let by = 40;
         fb.rect(bx, by, tw + 12, 15, C_PAPER);
         fb.frame_rect(bx, by, tw + 12, 15, 2, C_INK);
         fb.text(font, &stage.caption, bx + 6, by + 4, rgb(0x3a, 0x26, 0x14), 1);
@@ -489,6 +509,71 @@ fn draw_menu(fb: &mut Framebuffer, font: &Font, stage: &Stage) {
         if let Some(on) = st {
             fb.rect(x + w - 14, iy + 1, 8, 8, if on { C_GLOW2 } else { rgb(0xd8, 0xc6, 0xa0) });
             fb.frame_rect(x + w - 14, iy + 1, 8, 8, 1, C_INK);
+        }
+    }
+}
+
+/// The chat surface: the designed chatbox background (大对话框 框体) with a
+/// session log header, the current session's conversation, and an input bar.
+fn draw_chat(fb: &mut Framebuffer, font: &Font, text: &text::Text, sprites: &Sprites, stage: &Stage) {
+    // designed chatbox background, 150×240, centered in the 156-wide window
+    if let Some(bg) = sprites.frame("chatbox", 0) {
+        fb.blit(bg, 3, 0, 1, false);
+    } else {
+        fb.rect(3, 0, 150, 240, rgb(0xd5, 0xd5, 0xd5));
+        fb.frame_rect(3, 0, 150, 240, 2, rgb(0x7a, 0x3b, 0x3b));
+    }
+    let ink = rgb(0x33, 0x24, 0x16);
+    let muted = rgb(0x8a, 0x74, 0x55);
+    let orange = rgb(0xb9, 0x56, 0x0e);
+
+    // header: session log controls (new / prev / pos / next) + close
+    fb.text(font, "+NEW", 10, 9, muted, 1);
+    fb.text(font, "<", 46, 9, ink, 1);
+    fb.text(font, &stage.chat_pos, 56, 9, ink, 1);
+    fb.text(font, ">", 82, 9, ink, 1);
+    fb.text(font, "X", 138, 9, orange, 1);
+    fb.rect(10, 20, 136, 1, muted);
+
+    // the current session's conversation (newest lines fill downward)
+    if stage.chat_msgs.is_empty() {
+        fb.text(font, "SAY HI TO @PB", 36, 120, muted, 1);
+    } else {
+        let mut y = 26;
+        let start = stage.chat_msgs.len().saturating_sub(8);
+        for (role, msg) in &stage.chat_msgs[start..] {
+            if y > 206 {
+                break;
+            }
+            let (label, col) = if role == "user" { ("you", rgb(0x3f, 0x6a, 0x8f)) } else { ("@pb", orange) };
+            let line = format!("{label}: {msg}");
+            let n = if text.available() {
+                text.wrapped(fb, &line, 10, y, 136, 11.0, 12, col, 6)
+            } else {
+                let ascii: String = line.chars().filter(|c| c.is_ascii()).collect();
+                fb.text(font, &ascii.chars().take(24).collect::<String>(), 10, y, col, 1);
+                1
+            };
+            y += n as i32 * 12 + 3;
+        }
+    }
+
+    // input bar — typed inline (no system dialog)
+    fb.rect(10, 216, 136, 17, rgb(0xc6, 0xc6, 0xc6));
+    fb.frame_rect(10, 216, 136, 17, 1, muted);
+    if stage.chat_pending {
+        fb.text(font, "@PB THINKING", 16, 221, orange, 1);
+    } else if stage.chat_input.is_empty() {
+        fb.text(font, "> CLICK, THEN TYPE", 16, 221, muted, 1);
+    } else {
+        // show the tail of the input so long lines stay visible; blinking caret
+        let shown: String = stage.chat_input.chars().rev().take(24).collect::<Vec<_>>().into_iter().rev().collect();
+        let caret = if (stage.clock_ms / 500.0) as i64 % 2 == 0 { "_" } else { " " };
+        if text.available() {
+            text.line(fb, &format!("> {shown}{caret}"), 14, 218, 11.0, ink);
+        } else {
+            let ascii: String = format!("> {shown}{caret}").chars().filter(|c| c.is_ascii()).collect();
+            fb.text(font, &ascii, 14, 221, ink, 1);
         }
     }
 }
@@ -744,16 +829,21 @@ fn run_capture(dir: &str) -> Result<()> {
     render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
     write_png(&format!("{dir}/5-nap.png"), &fb)?;
 
-    // @pb chat reply panel (fontdue, CJK)
+    // @pb chatbox (the designed 大对话框 surface) with a session
     {
         let mut g = stage.borrow_mut();
         g.menu_open = false;
         g.chat_pending = false;
-        g.chat_reply = "Looks like you're editing mac_widget.rs and rebuilding. Want me to watch the build?".into();
-        g.chat_reply_until = g.clock_ms + 20000.0;
-        g.cat_state = "talk".into();
+        g.chat_open = true;
+        g.chat_pos = "2/3".into();
+        g.chat_msgs = vec![
+            ("user".into(), "what am I working on?".into()),
+            ("pb".into(), "You're editing mac_widget.rs and rebuilding — a round of coding.".into()),
+            ("user".into(), "帮我盯着编译".into()),
+            ("pb".into(), "好，我盯着 cargo build，出错就叫你。".into()),
+        ];
     }
-    render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
+    render(&mut fb, &font, &sprites, &stage.borrow(), true, &text);
     write_png(&format!("{dir}/6-chat.png"), &fb)?;
 
     println!("wrote 6 frames to {dir}/ (text: {})", if text.available() { "fontdue" } else { "ascii-fallback" });
@@ -819,7 +909,7 @@ fn run_window(scale: usize) -> Result<()> {
                         brain.event(serde_json::json!({"t":"menu","act":act}));
                     }
                 }
-            } else if ly < 94 {
+            } else if ly >= 45 && ly < 128 {
                 brain.event(serde_json::json!({"t":"pet"}));
             }
         }
