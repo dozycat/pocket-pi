@@ -113,9 +113,10 @@ requires.
   and drives privacy-avert against a sensitive-app list.
 - **@pb in-context chat** — right-click → CHAT @PB opens a native input
   (IME/CJK), and the message + frontmost app + recent sequences POST to
-  `pb-bridge`: the paperboy-chat agent (persona ported from santi) run
-  through cat's event loop against a real model (openai-codex). The reply
-  renders in a fontdue panel above the cat (any language). Start it with:
+  `pb-bridge`: the paperboy-chat agent run on **the harness** — the persona
+  ported into cat, driven by the pi turn loop against a real model
+  (openai-codex via pi-ai). Not santi; we already have pi + the harness.
+  The reply renders in a fontdue panel above the cat (any language). Start:
 
   ```sh
   # in the cat repo:
