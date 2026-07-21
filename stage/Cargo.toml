@@ -23,6 +23,15 @@ rquickjs = "0.12"
 serde_json = "1"
 anyhow = "1"
 
+# Native transparent desktop-pet window (no window chrome) via AppKit.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSDate", "NSGeometry", "NSRunLoop", "NSThread"] }
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSWindow", "NSView", "NSResponder", "NSColor", "NSEvent", "NSScreen", "NSGraphics", "NSGraphicsContext", "NSRunningApplication", "NSWorkspace", "objc2-quartz-core"] }
+objc2-quartz-core = { version = "0.2", features = ["CALayer"] }
+core-graphics = "0.23"
+foreign-types = "0.5"
+
 [profile.release]
 opt-level = "s"
 lto = true

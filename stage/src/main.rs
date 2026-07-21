@@ -11,8 +11,11 @@
 //!   pocket-cat --scale N             window pixel scale (default 3)
 
 mod assets;
+mod capture;
 mod fb;
 mod sprites;
+#[cfg(target_os = "macos")]
+mod mac_widget;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -81,6 +84,12 @@ struct Stage {
     cmd: Option<String>,
     // request the host to kick off a browse scene (set by cat.browse op)
     want_browse: bool,
+    // live mode: the monitor shows a REAL screen capture instead of synthetic
+    // scenes; scene rotation is off and ticks come from frontmost-app changes.
+    live: bool,
+    shot: Option<fb::Sprite>,
+    shot_blank: bool,
+    front_app: String,
 }
 
 impl Stage {
@@ -107,6 +116,10 @@ impl Stage {
             menu_y: 0,
             cmd: None,
             want_browse: false,
+            live: false,
+            shot: None,
+            shot_blank: false,
+            front_app: String::new(),
         }))
     }
     fn scene(&self) -> &'static Scene {
@@ -301,9 +314,10 @@ fn step(stage: &Rc<RefCell<Stage>>, brain: &Brain, sprites: &Sprites, dt: f64) {
         }
     } else {
         // scene rotation (only while observing) → tick the brain on each change.
+        // In live mode the real frontmost-app changes drive ticks instead.
         let advance = {
             let mut g = stage.borrow_mut();
-            if g.observe {
+            if g.observe && !g.live {
                 g.scene_acc += dt;
                 let dur = g.scene().dur_ms;
                 if g.scene_acc >= dur {
@@ -366,10 +380,15 @@ const SY: i32 = 30;
 const SW: i32 = 116;
 const SH: i32 = 74;
 
-fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage) {
-    fb.clear(C_DESK);
-    // desk shelf
-    fb.rect(0, H as i32 - 14, W as i32, 3, rgba(0x8a, 0x63, 0x30, 120));
+fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, transparent: bool) {
+    if transparent {
+        // windowless widget: only the monitor + cat + bubbles are opaque; the
+        // rest is fully transparent so the pet floats on the desktop.
+        fb.clear(0x0000_0000);
+    } else {
+        fb.clear(C_DESK);
+        fb.rect(0, H as i32 - 14, W as i32, 3, rgba(0x8a, 0x63, 0x30, 120));
+    }
 
     // ── monitor ──
     fb.rect(8, 18, 140, 104, C_BODY);
@@ -492,11 +511,51 @@ fn draw_screen(fb: &mut Framebuffer, font: &Font, stage: &Stage) {
         draw_browse(fb, font, b);
         return;
     }
-    let sc = stage.scene();
-    if stage.averting && !sc.safe {
+    if stage.averting {
         draw_censored(fb, font);
         return;
     }
+    // ── live mode: show the real screen capture ──
+    if stage.live {
+        match &stage.shot {
+            Some(shot) if !stage.shot_blank => {
+                // blit the downscaled screenshot to fill the screen region
+                let sx = SW as f32 / shot.w.max(1) as f32;
+                let sy = SH as f32 / shot.h.max(1) as f32;
+                for y in 0..SH {
+                    for x in 0..SW {
+                        let px = (x as f32 / sx) as u32;
+                        let py = (y as f32 / sy) as u32;
+                        let i = (py.min(shot.h - 1) * shot.w + px.min(shot.w - 1)) as usize;
+                        if let Some(&c) = shot.px.get(i) {
+                            fb.put(SX + x, SY + y, c);
+                        }
+                    }
+                }
+                // LIVE badge + frontmost app
+                fb.rect(SX, SY, SW, 9, rgba(0x0e, 0x1f, 0x14, 210));
+                fb.rect(SX + 3, SY + 3, 4, 3, C_HEART);
+                fb.text(font, "LIVE", SX + 10, SY + 2, C_GLOW, 1);
+                if !stage.front_app.is_empty() {
+                    let up = stage.front_app.to_uppercase();
+                    let t: String = up.chars().take(16).collect();
+                    fb.text(font, &t, SX + 34, SY + 2, C_AMBER, 1);
+                }
+                return;
+            }
+            Some(_) => {
+                // blank frame → needs Screen Recording permission
+                fb.text(font, "GRANT SCREEN", SX + 18, SY + SH / 2 - 6, C_AMBER, 1);
+                fb.text(font, "RECORDING", SX + 24, SY + SH / 2 + 4, C_AMBER, 1);
+                return;
+            }
+            None => {
+                fb.text(font, "CAPTURING...", SX + 20, SY + SH / 2, C_GLOW2, 1);
+                return;
+            }
+        }
+    }
+    let sc = stage.scene();
     // title bar
     fb.rect(SX, SY, SW, 10, rgb(0x0e, 0x1f, 0x14));
     fb.rect(SX + 3, SY + 3, 6, 4, C_GLOW);
@@ -641,17 +700,17 @@ fn run_capture(dir: &str) -> Result<()> {
     brain.event(serde_json::json!({"t":"boot"}));
     advance(&stage, &brain, 2000.0);
     freeze(&stage, &brain, 0); // CODE (safe)
-    render(&mut fb, &font, &sprites, &stage.borrow());
+    render(&mut fb, &font, &sprites, &stage.borrow(), false);
     write_png(&format!("{dir}/1-watch.png"), &fb)?;
 
     freeze(&stage, &brain, 3); // LOGIN (sensitive) → avert + censor
-    render(&mut fb, &font, &sprites, &stage.borrow());
+    render(&mut fb, &font, &sprites, &stage.borrow(), false);
     write_png(&format!("{dir}/2-privacy.png"), &fb)?;
 
     // browser-use — snapshot mid-animation
     brain.event(serde_json::json!({"t":"menu","act":"browse"}));
     advance(&stage, &brain, 1200.0);
-    render(&mut fb, &font, &sprites, &stage.borrow());
+    render(&mut fb, &font, &sprites, &stage.borrow(), false);
     write_png(&format!("{dir}/3-browse.png"), &fb)?;
     // let it finish and the post-browse reaction settle before the next state
     advance(&stage, &brain, 3200.0);
@@ -664,7 +723,7 @@ fn run_capture(dir: &str) -> Result<()> {
         g.menu_x = 120;
         g.menu_y = 40;
     }
-    render(&mut fb, &font, &sprites, &stage.borrow());
+    render(&mut fb, &font, &sprites, &stage.borrow(), false);
     write_png(&format!("{dir}/4-menu.png"), &fb)?;
 
     // nap — clean, nothing pending
@@ -673,7 +732,7 @@ fn run_capture(dir: &str) -> Result<()> {
     }
     brain.event(serde_json::json!({"t":"menu","act":"nap"}));
     advance(&stage, &brain, 800.0);
-    render(&mut fb, &font, &sprites, &stage.borrow());
+    render(&mut fb, &font, &sprites, &stage.borrow(), false);
     write_png(&format!("{dir}/5-nap.png"), &fb)?;
 
     println!("wrote 5 frames to {dir}/");
@@ -745,7 +804,7 @@ fn run_window(scale: usize) -> Result<()> {
         prev_l = ldown;
         prev_r = rdown;
 
-        render(&mut fb, &font, &sprites, &stage.borrow());
+        render(&mut fb, &font, &sprites, &stage.borrow(), false);
         win.update_with_buffer(&fb.to_minifb(), W, H)?;
     }
     Ok(())
@@ -769,17 +828,29 @@ fn menu_hit(stage: &Stage, x: i32, y: i32) -> Option<&'static str> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut scale = 3usize;
+    // Default 1× ≈ 300×150 pt — a compact desktop pet (~1/5 of a laptop's width).
+    let mut scale: f64 = 1.0;
     if let Some(i) = args.iter().position(|a| a == "--scale") {
         if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
             scale = v;
         }
     }
+    let windowed = args.iter().any(|a| a == "--windowed");
     let result = if let Some(i) = args.iter().position(|a| a == "--capture") {
         let dir = args.get(i + 1).map(|s| s.as_str()).unwrap_or("captures");
         run_capture(dir)
+    } else if windowed {
+        run_window((scale.round() as usize).max(1)) // opaque titled window (minifb) — for debugging
     } else {
-        run_window(scale)
+        // default: the windowless transparent desktop pet
+        #[cfg(target_os = "macos")]
+        {
+            mac_widget::run(scale)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            run_window((scale.round() as usize).max(1))
+        }
     };
     if let Err(e) = result {
         eprintln!("pocket-cat: {e:#}");

@@ -29,7 +29,7 @@ impl Sprites {
     }
 }
 
-fn decode(bytes: &[u8]) -> Sprite {
+pub fn decode(bytes: &[u8]) -> Sprite {
     let decoder = png::Decoder::new(bytes);
     let mut reader = decoder.read_info().expect("valid PNG asset");
     let mut buf = vec![0u8; reader.output_buffer_size()];
