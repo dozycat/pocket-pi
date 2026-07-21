@@ -111,10 +111,10 @@ requires.
 - **Activity sequences** — every frontmost-app change (via `NSWorkspace`,
   no permission) appends a real record to `~/.pocket-cat/sequences.jsonl`,
   and drives privacy-avert against a sensitive-app list.
-- **@pb in-context chat** — right-click → CHAT @PB opens a native input
+- **@cat in-context chat** — right-click → CHAT opens a native input
   (IME/CJK), and the message + frontmost app + recent sequences POST to
-  `pb-swarm`: one graph script that boots the **whole paperboy agent swarm**
-  (paperboy-chat, gardener, sequences, workflow-classifier/narrator, …) live
+  `cat-swarm`: one graph script that boots the **whole cat agent swarm**
+  (cat-chat, gardener, sequences, workflow-classifier/narrator, …) live
   on the harness — the pi turn loop against a real model (openai-codex via
   pi-ai), the world persisted to a JSONL event log (garden/workflows/chat
   replay on restart). Not santi. The reply renders in a fontdue panel above
@@ -122,7 +122,7 @@ requires.
 
   ```sh
   # in the cat repo:
-  npx tsx examples/pb-swarm.ts     # the swarm on :8848 — /chat /observe /synthesize /garden
+  npx tsx examples/cat-swarm.ts     # the swarm on :8848 — /chat /observe /synthesize /garden
   ```
 
 ## Layout

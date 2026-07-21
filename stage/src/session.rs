@@ -1,4 +1,4 @@
-//! Chat sessions — one conversation per session, persisted like paperboy's
+//! Chat sessions — one conversation per session, persisted like cat's
 //! per-session chat + a session log. Each session is a JSONL file under
 //! ~/.pocket-cat/sessions/<id>.jsonl (one message per line); the directory
 //! listing IS the session log. Switch, create, append; the widget renders

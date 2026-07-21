@@ -29,7 +29,7 @@ use fb::{rgb, rgba, Argb, Font, Framebuffer};
 use sprites::Sprites;
 
 const W: usize = 156;
-const H: usize = 240; // fits the 150×240 designed chatbox; cat+monitor sit at the bottom
+const H: usize = 278; // 240 chatbox/monitor area + a keypad controller strip below
 
 // ── observed scenes (stand-in mirror of what the agent watches) ────────────
 struct Scene {
@@ -92,7 +92,7 @@ struct Stage {
     shot: Option<fb::Sprite>,
     shot_blank: bool,
     front_app: String,
-    // @pb chat
+    // @cat chat
     chat_pending: bool,
     chat_reply: String,
     chat_reply_until: f64,
@@ -102,6 +102,7 @@ struct Stage {
     chat_pos: String,             // "2/5" session position for the log
     chat_msgs: Vec<(String, String)>, // (role, text) of the current session
     chat_input: String,           // what's being typed in the chatbox input bar
+    stream_buf: String,           // the @cat reply streaming in (live, pre-commit)
 }
 
 impl Stage {
@@ -139,6 +140,7 @@ impl Stage {
             chat_pos: String::new(),
             chat_msgs: Vec::new(),
             chat_input: String::new(),
+            stream_buf: String::new(),
         }))
     }
     fn scene(&self) -> &'static Scene {
@@ -409,12 +411,10 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         fb.rect(0, H as i32 - 14, W as i32, 3, rgba(0x8a, 0x63, 0x30, 120));
     }
 
-    // ── chat mode: the designed chatbox takes over the whole widget ──
+    // ── chat mode: the designed chatbox takes over the upper widget ──
     if stage.chat_open {
         draw_chat(fb, font, text, sprites, stage);
-        if stage.menu_open {
-            draw_menu(fb, font, stage);
-        }
+        draw_controller(fb, font, stage);
         return;
     }
 
@@ -476,14 +476,60 @@ fn render(fb: &mut Framebuffer, font: &Font, sprites: &Sprites, stage: &Stage, t
         fb.text(font, &stage.caption, bx + 6, by + 4, rgb(0x3a, 0x26, 0x14), 1);
     }
 
-    // context menu
-    if stage.menu_open {
-        draw_menu(fb, font, stage);
+    draw_controller(fb, font, stage);
+}
+
+/// The keypad controller below the monitor — the widget's control surface
+/// (replaces the right-click menu). Pixel keycaps consistent with the shell;
+/// OBS/PRV show a green LED when on, CHT lights when the chatbox is open.
+const KEYS: &[(&str, &str)] = &[
+    ("chat", "CHT"),
+    ("observe", "OBS"),
+    ("privacy", "PRV"),
+    ("browse", "WEB"),
+    ("nap", "NAP"),
+    ("about", "ABT"),
+];
+const KEY_X0: i32 = 6;
+const KEY_W: i32 = 24;
+const KEY_Y: i32 = 246;
+const KEY_H: i32 = 26;
+
+fn draw_controller(fb: &mut Framebuffer, font: &Font, stage: &Stage) {
+    fb.rect(4, 242, W as i32 - 8, 34, C_BODY);
+    fb.frame_rect(4, 242, W as i32 - 8, 34, 2, C_INK);
+    for (i, (act, label)) in KEYS.iter().enumerate() {
+        let kx = KEY_X0 + i as i32 * KEY_W;
+        fb.rect(kx + 1, KEY_Y, KEY_W - 2, KEY_H, rgb(0x2f, 0x2a, 0x22));
+        fb.frame_rect(kx + 1, KEY_Y, KEY_W - 2, KEY_H, 1, C_INK);
+        fb.rect(kx + 2, KEY_Y + 1, KEY_W - 4, 2, rgb(0x47, 0x3e, 0x31));
+        let tw = fb.text_w(label, 1);
+        fb.text(font, label, kx + (KEY_W - tw) / 2, KEY_Y + 8, C_GLOW2, 1);
+        let led = match *act {
+            "observe" => Some(stage.observe),
+            "privacy" => Some(stage.privacy),
+            _ => None,
+        };
+        if let Some(on) = led {
+            fb.rect(kx + KEY_W / 2 - 3, KEY_Y + KEY_H - 6, 6, 3, if on { C_GLOW } else { rgb(0x5a, 0x2a, 0x2a) });
+        }
+        if *act == "chat" && stage.chat_open {
+            fb.frame_rect(kx + 1, KEY_Y, KEY_W - 2, KEY_H, 2, C_ORANGE);
+        }
     }
 }
 
+/// Which controller key (if any) is under a framebuffer point.
+pub(crate) fn controller_hit(fx: i32, fy: i32) -> Option<&'static str> {
+    if fy < KEY_Y || fy > KEY_Y + KEY_H || fx < KEY_X0 {
+        return None;
+    }
+    let idx = (fx - KEY_X0) / KEY_W;
+    KEYS.get(idx as usize).map(|k| k.0)
+}
+
 const MENU: &[(&str, &str)] = &[
-    ("chat", "CHAT @PB"),
+    ("chat", "CHAT @CAT"),
     ("observe", "OBSERVE"),
     ("privacy", "PRIVACY"),
     ("browse", "BROWSE"),
@@ -535,23 +581,33 @@ fn draw_chat(fb: &mut Framebuffer, font: &Font, text: &text::Text, sprites: &Spr
     fb.text(font, "X", 138, 9, orange, 1);
     fb.rect(10, 20, 136, 1, muted);
 
-    // the current session's conversation (newest lines fill downward)
-    if stage.chat_msgs.is_empty() {
-        fb.text(font, "SAY HI TO @PB", 36, 120, muted, 1);
+    // the current session's conversation (newest lines fill downward),
+    // then the reply streaming in live (@cat, growing token by token)
+    if stage.chat_msgs.is_empty() && stage.stream_buf.is_empty() && !stage.chat_pending {
+        fb.text(font, "SAY HI TO @CAT", 34, 120, muted, 1);
     } else {
+        let you = rgb(0x3f, 0x6a, 0x8f);
         let mut y = 26;
         let start = stage.chat_msgs.len().saturating_sub(8);
-        for (role, msg) in &stage.chat_msgs[start..] {
+        let mut lines: Vec<(String, Argb)> = stage.chat_msgs[start..]
+            .iter()
+            .map(|(role, msg)| {
+                let (label, col) = if role == "user" { ("you", you) } else { ("@cat", orange) };
+                (format!("{label}: {msg}"), col)
+            })
+            .collect();
+        if !stage.stream_buf.is_empty() {
+            lines.push((format!("@cat: {}", stage.stream_buf), orange));
+        }
+        for (line, col) in &lines {
             if y > 206 {
                 break;
             }
-            let (label, col) = if role == "user" { ("you", rgb(0x3f, 0x6a, 0x8f)) } else { ("@pb", orange) };
-            let line = format!("{label}: {msg}");
             let n = if text.available() {
-                text.wrapped(fb, &line, 10, y, 136, 11.0, 12, col, 6)
+                text.wrapped(fb, line, 10, y, 136, 11.0, 12, *col, 6)
             } else {
                 let ascii: String = line.chars().filter(|c| c.is_ascii()).collect();
-                fb.text(font, &ascii.chars().take(24).collect::<String>(), 10, y, col, 1);
+                fb.text(font, &ascii.chars().take(24).collect::<String>(), 10, y, *col, 1);
                 1
             };
             y += n as i32 * 12 + 3;
@@ -561,8 +617,8 @@ fn draw_chat(fb: &mut Framebuffer, font: &Font, text: &text::Text, sprites: &Spr
     // input bar — typed inline (no system dialog)
     fb.rect(10, 216, 136, 17, rgb(0xc6, 0xc6, 0xc6));
     fb.frame_rect(10, 216, 136, 17, 1, muted);
-    if stage.chat_pending {
-        fb.text(font, "@PB THINKING", 16, 221, orange, 1);
+    if stage.chat_pending && stage.stream_buf.is_empty() {
+        fb.text(font, "@CAT THINKING", 16, 221, orange, 1);
     } else if stage.chat_input.is_empty() {
         fb.text(font, "> CLICK, THEN TYPE", 16, 221, muted, 1);
     } else {
@@ -579,14 +635,14 @@ fn draw_chat(fb: &mut Framebuffer, font: &Font, text: &text::Text, sprites: &Spr
 }
 
 fn draw_screen(fb: &mut Framebuffer, font: &Font, stage: &Stage, text: &text::Text) {
-    // @pb chat takes over the screen (the cat "speaks" on its own monitor)
+    // @cat chat takes over the screen (the cat "speaks" on its own monitor)
     if stage.chat_pending {
-        fb.text(font, "@PB THINKING", SX + 16, SY + SH / 2 - 3, C_GLOW, 1);
+        fb.text(font, "@CAT THINKING", SX + 16, SY + SH / 2 - 3, C_GLOW, 1);
         return;
     }
     if !stage.chat_reply.is_empty() && stage.clock_ms < stage.chat_reply_until {
         fb.rect(SX, SY, SW, 10, C_ORANGE);
-        fb.text(font, "@PB", SX + 4, SY + 2, rgb(0xff, 0xf8, 0xec), 1);
+        fb.text(font, "@CAT", SX + 4, SY + 2, rgb(0xff, 0xf8, 0xec), 1);
         let col = rgb(0xea, 0xe2, 0xcc);
         if text.available() {
             text.wrapped(fb, &stage.chat_reply, SX + 4, SY + 13, SW - 8, 11.0, 12, col, 5);
@@ -829,7 +885,7 @@ fn run_capture(dir: &str) -> Result<()> {
     render(&mut fb, &font, &sprites, &stage.borrow(), false, &text);
     write_png(&format!("{dir}/5-nap.png"), &fb)?;
 
-    // @pb chatbox (the designed 大对话框 surface) with a session
+    // @cat chatbox (the designed 大对话框 surface) with a session
     {
         let mut g = stage.borrow_mut();
         g.menu_open = false;

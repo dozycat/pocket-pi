@@ -32,6 +32,13 @@ use crate::{render, step, Brain, Framebuffer, Sprites, Stage, H, W};
 const K_ALPHA_PREMUL_LAST: u32 = 1; // kCGImageAlphaPremultipliedLast
 const FLOATING_LEVEL: isize = 3; // NSFloatingWindowLevel
 
+/// Incremental chat events streamed from cat-swarm (SSE) to the render loop.
+enum ChatUpdate {
+    Delta(String), // a token of the @cat reply
+    Tool(String),  // a tool call name
+    Done,          // turn finished — commit the streamed reply to the session
+}
+
 // A borderless NSWindow can't become key by default, so it never sees
 // keyDown — which is why input used to fall back to a system dialog. This
 // subclass says "yes, I can be key", so the chatbox can take typing inline.
@@ -89,9 +96,9 @@ pub fn run(scale: f64) -> Result<()> {
     let text = crate::text::Text::load();
     let mut fb = Framebuffer::new(W, H);
 
-    // @pb replies come back from a worker over this channel (the user line is
-    // appended immediately on send, so only the reply flows back).
-    let (chat_tx, chat_rx) = std::sync::mpsc::channel::<String>();
+    // @cat replies stream back from a worker over this channel (the user line
+    // is appended immediately on send; the reply streams in token by token).
+    let (chat_tx, chat_rx) = std::sync::mpsc::channel::<ChatUpdate>();
     // chat sessions (chat-per-session + the session log), persisted on disk.
     let mut sessions = crate::session::Sessions::load();
     let sync_sessions = |stage: &Rc<RefCell<Stage>>, sessions: &crate::session::Sessions| {
@@ -182,6 +189,28 @@ pub fn run(scale: f64) -> Result<()> {
             };
             let Some(ev) = ev else { break };
             let ty = unsafe { ev.r#type() };
+            // the keypad controller below the monitor drives everything (both
+            // modes) — this replaces the right-click menu.
+            if ty == NSEventType::LeftMouseDown {
+                let loc = unsafe { ev.locationInWindow() };
+                let fx = (loc.x / scale) as i32;
+                let fy = (H as i32) - (loc.y / scale) as i32;
+                if let Some(act) = crate::controller_hit(fx, fy) {
+                    match act {
+                        "chat" => {
+                            let open = stage.borrow().chat_open;
+                            stage.borrow_mut().chat_open = !open;
+                            if !open {
+                                unsafe { window.makeKeyAndOrderFront(None) };
+                                app.activateIgnoringOtherApps(true);
+                            }
+                        }
+                        "about" => {}
+                        other => brain.event(serde_json::json!({"t":"menu","act":other})),
+                    }
+                    continue;
+                }
+            }
             // typing goes into the chatbox input (the window is key-capable)
             if stage.borrow().chat_open && ty == NSEventType::KeyDown {
                 let key = unsafe { ev.keyCode() };
@@ -191,7 +220,11 @@ pub fn run(scale: f64) -> Result<()> {
                     36 | 76 => { // return / enter → send
                         let text = stage.borrow().chat_input.trim().to_string();
                         if !text.is_empty() && !stage.borrow().chat_pending {
-                            stage.borrow_mut().chat_input.clear();
+                            {
+                                let mut g = stage.borrow_mut();
+                                g.chat_input.clear();
+                                g.stream_buf.clear();
+                            }
                             sessions.append("user", &text);
                             sync_sessions(&stage, &sessions);
                             send_message(&stage, &chat_tx, sessions.cur_id().to_string(), text);
@@ -237,14 +270,32 @@ pub fn run(scale: f64) -> Result<()> {
             unsafe { app.sendEvent(&ev) };
         }
 
-        // @pb reply arrived → append to the session, cat talks
-        if let Ok(reply) = chat_rx.try_recv() {
-            stage.borrow_mut().chat_pending = false;
-            sessions.append("pb", &reply);
-            sync_sessions(&stage, &sessions);
-            let mut g = stage.borrow_mut();
-            g.cat_state = "talk".into();
-            g.cad_hz = 14.0;
+        // drain streamed chat updates → live @cat reply in the chatbox
+        while let Ok(u) = chat_rx.try_recv() {
+            match u {
+                ChatUpdate::Delta(d) => stage.borrow_mut().stream_buf.push_str(&d),
+                ChatUpdate::Tool(name) => {
+                    let mut g = stage.borrow_mut();
+                    if !g.stream_buf.is_empty() && !g.stream_buf.ends_with('\n') {
+                        g.stream_buf.push('\n');
+                    }
+                    g.stream_buf.push_str(&format!("· {name}\n"));
+                }
+                ChatUpdate::Done => {
+                    let reply = stage.borrow().stream_buf.trim().to_string();
+                    {
+                        let mut g = stage.borrow_mut();
+                        g.stream_buf.clear();
+                        g.chat_pending = false;
+                        g.cat_state = "talk".into();
+                        g.cad_hz = 14.0;
+                    }
+                    if !reply.is_empty() {
+                        sessions.append("cat", &reply);
+                    }
+                    sync_sessions(&stage, &sessions);
+                }
+            }
         }
 
         let now = std::time::Instant::now();
@@ -312,7 +363,7 @@ fn is_sensitive(app: &str) -> bool {
     SENSITIVE.iter().any(|s| app.eq_ignore_ascii_case(s))
 }
 
-/// Append a real activity-sequence record (paperboy-shaped) to
+/// Append a real activity-sequence record (cat-shaped) to
 /// ~/.pocket-cat/sequences.jsonl. One observation per frontmost-app change.
 fn append_sequence(app: &str, w: u32, h: u32, blank: bool) {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -336,15 +387,16 @@ fn append_sequence(app: &str, w: u32, h: u32, blank: bool) {
     }
 }
 
-/// Send the typed message to pb-swarm (POST {message, sessionId, app,
-/// sequences}) and hand the reply back to the render loop. Input is typed
+/// Send the typed message to cat-swarm and STREAM the reply back (SSE):
+/// text deltas + tool calls arrive as ChatUpdate events. Input is typed
 /// inline in the chatbox — no system dialog.
 fn send_message(
     stage: &Rc<RefCell<Stage>>,
-    tx: &std::sync::mpsc::Sender<String>,
+    tx: &std::sync::mpsc::Sender<ChatUpdate>,
     session_id: String,
     message: String,
 ) {
+    use std::io::BufRead;
     let app = stage.borrow().front_app.clone();
     let sequences = recent_sequences(8);
     {
@@ -355,17 +407,46 @@ fn send_message(
     }
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let url = std::env::var("POCKET_CAT_PB_URL").unwrap_or_else(|_| "http://127.0.0.1:8848/chat".into());
+        let url = std::env::var("POCKET_CAT_URL").unwrap_or_else(|_| "http://127.0.0.1:8848/chat".into());
         let body = serde_json::json!({ "message": message, "sessionId": session_id, "app": app, "sequences": sequences });
-        let reply = match ureq::post(&url).timeout(std::time::Duration::from_secs(90)).send_json(body) {
-            Ok(resp) => resp
-                .into_json::<serde_json::Value>()
-                .ok()
-                .and_then(|v| v["reply"].as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "(no reply)".into()),
-            Err(_) => "(pb-swarm not reachable — run `npx tsx examples/pb-swarm.ts`)".into(),
-        };
-        let _ = tx.send(reply);
+        match ureq::post(&url).timeout(std::time::Duration::from_secs(180)).send_json(body) {
+            Ok(resp) => {
+                let reader = std::io::BufReader::new(resp.into_reader());
+                let mut ev = String::new();
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Some(e) = line.strip_prefix("event: ") {
+                        ev = e.to_string();
+                    } else if let Some(d) = line.strip_prefix("data: ") {
+                        let v: serde_json::Value = serde_json::from_str(d).unwrap_or_default();
+                        match ev.as_str() {
+                            "text" => {
+                                if let Some(s) = v["delta"].as_str() {
+                                    let _ = tx.send(ChatUpdate::Delta(s.to_string()));
+                                }
+                            }
+                            "tool" => {
+                                if let Some(s) = v["name"].as_str() {
+                                    let _ = tx.send(ChatUpdate::Tool(s.to_string()));
+                                }
+                            }
+                            "done" => {
+                                let _ = tx.send(ChatUpdate::Done);
+                            }
+                            "error" => {
+                                let _ = tx.send(ChatUpdate::Delta(format!("(error: {})", v["message"].as_str().unwrap_or(""))));
+                                let _ = tx.send(ChatUpdate::Done);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let _ = tx.send(ChatUpdate::Done); // ensure completion
+            }
+            Err(_) => {
+                let _ = tx.send(ChatUpdate::Delta("(cat-swarm not reachable — run `npx tsx examples/cat-swarm.ts`)".into()));
+                let _ = tx.send(ChatUpdate::Done);
+            }
+        }
     });
 }
 
@@ -400,30 +481,12 @@ fn handle_event(
     let fy = (H as i32) - (loc.y / scale) as i32;
 
     match ty {
-        NSEventType::RightMouseDown => {
-            let mut g = stage.borrow_mut();
-            g.menu_open = true;
-            g.menu_x = fx.min(W as i32 - 96);
-            g.menu_y = fy.min(H as i32 - 76);
-        }
         NSEventType::LeftMouseDown => {
             *dragged = false;
-            let open = stage.borrow().menu_open;
-            if open {
-                let hit = crate::menu_hit(&stage.borrow(), fx, fy);
-                stage.borrow_mut().menu_open = false;
-                if let Some(act) = hit {
-                    if act == "chat" {
-                        stage.borrow_mut().chat_open = true; // open the chatbox
-                    } else if act != "about" {
-                        brain.event(serde_json::json!({"t":"menu","act":act}));
-                    }
-                }
-            }
         }
         NSEventType::LeftMouseDragged => {
             *dragged = true;
-            // move the window with the cursor
+            // drag the widget around the desktop
             let dx = unsafe { ev.deltaX() };
             let dy = unsafe { ev.deltaY() };
             let frame = window.frame();
@@ -431,11 +494,9 @@ fn handle_event(
             unsafe { window.setFrameOrigin(origin) };
         }
         NSEventType::LeftMouseUp => {
-            if !*dragged && !stage.borrow().menu_open && !stage.borrow().chat_open {
-                // a click (not a drag) on the cat → pet it
-                if (45..128).contains(&fy) {
-                    brain.event(serde_json::json!({"t":"pet"}));
-                }
+            // a click (not a drag) on the cat → pet it
+            if !*dragged && !stage.borrow().chat_open && (45..128).contains(&fy) {
+                brain.event(serde_json::json!({"t":"pet"}));
             }
         }
         _ => {}

@@ -1,5 +1,5 @@
 //! Antialiased text for the chat panel — the 5×7 pixel font is ASCII-only,
-//! but @pb replies can be any language, so the chat renders through fontdue
+//! but @cat replies can be any language, so the chat renders through fontdue
 //! over a system font (STHeiti has CJK). Loaded at runtime; if unavailable,
 //! chat falls back to the pixel font (ASCII).
 

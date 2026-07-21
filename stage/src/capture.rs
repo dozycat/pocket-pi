@@ -2,7 +2,7 @@
 //! screen with the system `screencapture`, downscales it with `sips`, decodes
 //! the small PNG, and ships it to the render loop over a channel. This is the
 //! genuine desktop the cat "watches" in its monitor — the same OS capability
-//! paperboy's ScreenCollector uses, driven here directly so the widget is
+//! cat's ScreenCollector uses, driven here directly so the widget is
 //! self-contained. Capture only runs while observation is enabled.
 
 use std::sync::atomic::{AtomicBool, Ordering};
