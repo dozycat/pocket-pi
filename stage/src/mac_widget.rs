@@ -270,7 +270,7 @@ fn start_chat(stage: &Rc<RefCell<Stage>>, tx: &std::sync::mpsc::Sender<String>) 
         // native text input (owns IME, so Chinese input works)
         let out = std::process::Command::new("/usr/bin/osascript")
             .arg("-e")
-            .arg("display dialog \"跟 @pb 说：\" default answer \"\" with title \"Pocket Cat\" buttons {\"取消\",\"发送\"} default button \"发送\"")
+            .arg("display dialog \"Talk to @pb:\" default answer \"\" with title \"Pocket Cat\" buttons {\"Cancel\",\"Send\"} default button \"Send\"")
             .output();
         let message = match out {
             Ok(o) if o.status.success() => {
@@ -290,8 +290,8 @@ fn start_chat(stage: &Rc<RefCell<Stage>>, tx: &std::sync::mpsc::Sender<String>) 
                 .into_json::<serde_json::Value>()
                 .ok()
                 .and_then(|v| v["reply"].as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "(空回复)".into()),
-            Err(_) => "(pb-bridge 没连上 — 先跑 npx tsx examples/pb-bridge.ts)".into(),
+                .unwrap_or_else(|| "(no reply)".into()),
+            Err(_) => "(pb-swarm not reachable — run `npx tsx examples/pb-swarm.ts`)".into(),
         };
         // log the exchange
         append_chat(&message, &reply);

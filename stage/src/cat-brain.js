@@ -96,12 +96,12 @@ function handleCmd(t) {
   if (S.napping) { S.napping = false; cat.observe(true); }
   cat.state("talk");
   let reply = "OK - NOTED";
-  if (/stop|dont|off|停|别/.test(t)) { S.observe = false; cat.observe(false); cat.cad(0); reply = "STOPPED"; }
-  else if (/watch|look|see|看|盯/.test(t)) { S.observe = true; cat.observe(true); reply = "WATCHING"; }
-  else if (/nap|sleep|睡/.test(t)) { setTimeout(nap, 400); reply = "NAPPING"; }
-  else if (/star|browse|go|操作|去/.test(t)) { setTimeout(startBrowse, 300); reply = "ON IT"; }
-  else if (/privacy|隐私/.test(t)) { S.privacy = !S.privacy; cat.privacy(S.privacy); reply = S.privacy ? "PRIVACY ON" : "PRIVACY OFF"; }
-  else if (/hi|hello|喵|你好/.test(t)) { reply = "MEOW - IM HERE"; }
+  if (/stop|dont|off/.test(t)) { S.observe = false; cat.observe(false); cat.cad(0); reply = "STOPPED"; }
+  else if (/watch|look|see/.test(t)) { S.observe = true; cat.observe(true); reply = "WATCHING"; }
+  else if (/nap|sleep/.test(t)) { setTimeout(nap, 400); reply = "NAPPING"; }
+  else if (/star|browse|go/.test(t)) { setTimeout(startBrowse, 300); reply = "ON IT"; }
+  else if (/privacy/.test(t)) { S.privacy = !S.privacy; cat.privacy(S.privacy); reply = S.privacy ? "PRIVACY ON" : "PRIVACY OFF"; }
+  else if (/hi|hello/.test(t)) { reply = "MEOW - IM HERE"; }
   cat.say(reply, 2600);
   cat.fx("heart");
   cat.cad(14);

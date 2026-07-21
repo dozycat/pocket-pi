@@ -30,7 +30,7 @@ use sprites::Sprites;
 const W: usize = 156;
 const H: usize = 206;
 
-// ── observed scenes (示意 mirror of what the agent watches) ────────────────
+// ── observed scenes (stand-in mirror of what the agent watches) ────────────
 struct Scene {
     name: &'static str,
     safe: bool,
@@ -749,7 +749,7 @@ fn run_capture(dir: &str) -> Result<()> {
         let mut g = stage.borrow_mut();
         g.menu_open = false;
         g.chat_pending = false;
-        g.chat_reply = "喵~ 你在改 mac_widget.rs、反复 cargo build 调窗口。要我帮你盯着编译结果吗?".into();
+        g.chat_reply = "Looks like you're editing mac_widget.rs and rebuilding. Want me to watch the build?".into();
         g.chat_reply_until = g.clock_ms + 20000.0;
         g.cat_state = "talk".into();
     }
