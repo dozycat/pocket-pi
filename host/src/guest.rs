@@ -138,8 +138,16 @@ fn install_console(ctx: &Ctx) -> rquickjs::Result<()> {
         to_str.call::<_, String>((v.clone(),)).ok()
     }
 
-    let out = |args: rquickjs::function::Rest<rquickjs::Value>| println!("{}", join(args));
-    let err = |args: rquickjs::function::Rest<rquickjs::Value>| eprintln!("{}", join(args));
+    // Ignore write failures (e.g. stdout closed by `| head`) — a guest
+    // must outlive its pipe, not panic with it.
+    let out = |args: rquickjs::function::Rest<rquickjs::Value>| {
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{}", join(args));
+    };
+    let err = |args: rquickjs::function::Rest<rquickjs::Value>| {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{}", join(args));
+    };
 
     console.set("log", Function::new(ctx.clone(), out)?)?;
     console.set("info", Function::new(ctx.clone(), out)?)?;
