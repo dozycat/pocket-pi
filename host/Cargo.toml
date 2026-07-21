@@ -1,0 +1,20 @@
+# pocket-pi — the Pocket runtime family member for the agent-loop domain:
+# one QuickJS realm, the spec-pinned `pi` surface (clock, timers, streamed
+# HTTP, sandboxed fs, allowlisted env), one guest turn per host tick.
+[package]
+name = "pocket-pi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/pocket-stack/pocket-pi"
+description = "QuickJS runtime for pi-class agent loops: spec-pinned pi surface, host-owned time and I/O, quiescence-driven exit"
+
+[dependencies]
+rquickjs = "0.12"
+ureq = "2"
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true

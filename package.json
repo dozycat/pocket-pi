@@ -1,0 +1,19 @@
+{
+  "name": "pocket-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "QuickJS runtime for pi-class agent loops — the Pocket runtime family's agent-domain member",
+  "license": "MIT",
+  "repository": "github:pocket-stack/pocket-pi",
+  "scripts": {
+    "codegen": "node spec/codegen.mjs",
+    "codegen:check": "node spec/codegen.mjs --check",
+    "build:host": "cargo build --manifest-path host/Cargo.toml --release",
+    "build:hello": "node build/bundle.mjs examples/hello.ts --out dist/hello.js",
+    "test": "node spec/codegen.mjs --check && node test/e2e.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
