@@ -4,3 +4,10 @@ dist/
 host/target/
 *.log
 .DS_Store
+
+# Pocket Cat: the sprite art is the user's (dozycat-io/design), not
+# redistributed here — regenerate with `node stage/gen-assets.mjs`.
+stage/assets/*.png
+stage/src/assets.rs
+stage/captures/
+stage/target/

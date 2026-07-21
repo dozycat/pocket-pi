@@ -1,0 +1,28 @@
+# pocket-cat — the native macOS desktop-pet host on the Pocket runtime family.
+#
+# RUNTIMES.md pattern, `stage` surface: the Rust core owns the native window,
+# the software framebuffer, the clock and input (per-frame work stays native);
+# a QuickJS guest (the cat harness "brain") owns policy — reactions, privacy
+# judgement, commands. No Electron, no bun, no Python: one native binary.
+[package]
+name = "pocket-cat"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/pocket-stack/pocket-pi"
+description = "Native macOS pixel desktop-pet: a cat that watches a low-fps mirror of what the agent observes and looks away from private content"
+
+[[bin]]
+name = "pocket-cat"
+path = "src/main.rs"
+
+[dependencies]
+minifb = "0.27"
+png = "0.17"
+rquickjs = "0.12"
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true

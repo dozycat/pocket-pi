@@ -74,6 +74,34 @@ its own persona/skills and spawn a subagent, persists every event to JSONL
 through the fs sandbox, and proves replay equality on reopen — all inside
 QuickJS.
 
+## Pocket Cat — the native macOS desktop pet
+
+`stage/` is a second member of the runtime family that mounts a **`stage`
+surface** instead of `pi`: a native macOS window (via `minifb` — no
+Electron) with a software framebuffer, driven by a QuickJS guest
+(`cat-brain.js`). A pixel cat sits by a pixel CRT that mirrors, at a low
+frame rate, **what the agent observes**; when the mirror shows something
+private the cat **turns away and covers its face**, and the screen
+censors. Right-click is a menu (observe on/off, privacy, browser-use,
+nap); the cat reacts, naps, and can be petted.
+
+The split is RUNTIMES.md's three laws in the widget domain: the Rust core
+owns per-frame work (window, framebuffer, clock, input, scene rotation);
+the QuickJS guest owns policy (reactions, the privacy judgement,
+commands). Cadence is adaptive — the cat idles at ~2 fps and bursts to
+~14 fps while reacting (the same coalescing idea as `pi.tickHz`).
+
+```sh
+# the sprite art is the user's (dozycat-io/design), not committed here:
+node stage/gen-assets.mjs --design ../dozycat-io/design   # or `npm run gen:cat`
+npm run cat                     # open the widget window
+npm run cat:capture             # headless: render 5 key states to stage/captures/*.png
+```
+
+The headless `--capture` mode renders the watch / privacy-avert /
+browser-use / menu / nap states straight to PNG (no display needed) — the
+runtime's verification story, exactly as RUNTIMES.md requires.
+
 ## Layout
 
 ```
@@ -84,7 +112,11 @@ sdk/        prelude.js (fetch/streams/timers/URL/encoding/abort over the surface
             node-fs.js / node-path.js / node-crypto.js (bundler aliases)
 build/      bundle.mjs — entry.ts → one iife guest bundle, prelude first (node + esbuild)
 examples/   hello.ts — timers, fs, env, seeded RNG, streamed fetch + abort
-test/       e2e.mjs — hello goldens, live SSE stream + abort, sandbox walls
+test/       e2e.mjs — hello goldens, live SSE stream + abort, sandbox walls, tick coalescing
+stage/      pocket-cat — native macOS pixel desktop pet (the `stage` surface):
+            fb.rs (framebuffer + 5×7 font), sprites.rs (PNG decode), cat-brain.js
+            (QuickJS policy), main.rs (window host + headless capture);
+            gen-assets.mjs packs the user's sprites (not committed)
 ```
 
 ## Fidelity notes
